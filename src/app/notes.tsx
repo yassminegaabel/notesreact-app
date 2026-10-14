@@ -1,27 +1,87 @@
 // src/app/notes.tsx
-import { useState } from 'react';
-import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useEffect, useState } from 'react';
+import { ActivityIndicator, Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { NoteInputModal, type NoteDraft } from '../components/NoteInputModal';
+import { NoteInputModal } from '../components/NoteInputModal';
 import { NoteItem } from '../components/NoteItem';
-import type { Note } from '../types';
+import { errorMessage } from '../lib/errors';
+import { createNote, deleteNote, listNotes, updateNote } from '../services/notes';
+import type { Note, NoteDraft } from '../types';
 
 export default function NotesScreen() {
-  const [notes, setNotes] = useState<Note[]>([
-    { id: '1', title: 'Welcome', content: 'Tap + to add a note.' },
-    { id: '2', title: 'Shopping', content: 'Milk, bread, coffee.' },
-  ]);
+  const [notes, setNotes] = useState<Note[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   // null = dialog closed, 'new' = creating, a Note = editing it
   const [editing, setEditing] = useState<Note | 'new' | null>(null);
 
-  const save = (draft: NoteDraft) => {
-    if (editing === 'new') {
-      setNotes([{ id: Date.now().toString(), ...draft }, ...notes]);
-    } else if (editing) {
-      setNotes(notes.map((n) => (n.id === editing.id ? { ...n, ...draft } : n)));
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      setNotes(await listNotes());
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setLoading(false);
     }
-    setEditing(null);
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const save = async (draft: NoteDraft) => {
+    try {
+      if (editing === 'new') {
+        const created = await createNote(draft);
+        setNotes((current) => [created, ...current]);
+      } else if (editing) {
+        const updated = await updateNote(editing.id, draft);
+        setNotes((current) => current.map((n) => (n.id === updated.id ? updated : n)));
+      }
+      setEditing(null);
+    } catch (e) {
+      Alert.alert('Could not save the note', errorMessage(e));
+    }
   };
+
+  const remove = (note: Note) => {
+    Alert.alert('Delete note', `Delete "${note.title}"?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await deleteNote(note.id);
+            setNotes((current) => current.filter((n) => n.id !== note.id));
+          } catch (e) {
+            Alert.alert('Could not delete the note', errorMessage(e));
+          }
+        },
+      },
+    ]);
+  };
+
+  if (loading && notes.length === 0) {
+    return (
+      <View style={styles.center}>
+        <ActivityIndicator size="large" />
+      </View>
+    );
+  }
+
+  if (error) {
+    return (
+      <View style={styles.center}>
+        <Text style={styles.error}>{error}</Text>
+        <Pressable onPress={load}>
+          <Text style={styles.retry}>Retry</Text>
+        </Pressable>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -29,13 +89,11 @@ export default function NotesScreen() {
         data={notes}
         keyExtractor={(note) => note.id}
         contentContainerStyle={styles.list}
+        refreshing={loading}
+        onRefresh={load}
         ListEmptyComponent={<Text style={styles.empty}>No notes yet.</Text>}
         renderItem={({ item }) => (
-          <NoteItem
-            note={item}
-            onEdit={setEditing}
-            onDelete={(id) => setNotes(notes.filter((n) => n.id !== id))}
-          />
+          <NoteItem note={item} onEdit={setEditing} onDelete={() => remove(item)} />
         )}
       />
 
@@ -59,8 +117,11 @@ export default function NotesScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#fff' },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 24 },
   list: { padding: 16, gap: 12 },
   empty: { textAlign: 'center', color: '#60646c' },
+  error: { color: '#c0392b', textAlign: 'center' },
+  retry: { color: '#208AEF', fontSize: 16 },
   fab: {
     position: 'absolute',
     right: 20,
